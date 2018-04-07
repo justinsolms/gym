@@ -6,8 +6,7 @@ from gym.utils import seeding
 import numpy as np
 from os import path
 
-env_bounds = 300.0  # meters
-max_distance = 300.0  # meters
+max_position = 300.0  # meters
 max_angles = (22. / 7. / 180.) * 45  # 45 degrees
 max_velocity = 10.0
 max_angle_velocity = (22. / 7. / 180.) * 45  # 45 degrees/s
@@ -35,7 +34,12 @@ def body_to_earth_frame(ii, jj, kk):
 
 
 class PhysicsSim():
-    def __init__(self):
+    def __init__(self, reset_state=None):
+
+        if reset_state is not None:
+            self.reset_state = reset_state
+        else:
+            self.reset_state = None
 
         self.n_rotors = 4
         self.max_rotor_speed = 900.0
@@ -55,22 +59,23 @@ class PhysicsSim():
         I_z = 1 / 12. * self.mass * (width**2 + length**2)
         self.moments_of_inertia = np.array([I_x, I_y, I_z])  # moments of inertia
 
-        self.upper_bounds = np.array([env_bounds / 2, env_bounds / 2, env_bounds])
-        self.lower_bounds = np.array([-env_bounds / 2, -env_bounds / 2, 0])
+        self.max_position = np.array([max_position / 2, max_position / 2, max_position])
+        self.min_position = np.array([-max_position / 2, -max_position / 2, 0])
 
         self.reset()
 
     def reset(self, state=None):
         self.time = 0.0
-        if state == 'ten-up':
+        # if self.reset_state == 'ten-up':
+        if True:
             self.runtime = 5.0
             self.pose = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
-            self.v = np.array([0.0, 0.0, 0.0])
+            self.v = np.array([+10.0, 0.0, 0.0])
             self.angular_v = np.array([0.0, 0.0, 0.0])
         else:
             self.runtime = np.inf
             self.pose = np.concatenate((
-                np.random.uniform(-max_distance, max_distance, 3),
+                np.random.uniform(self.min_position, self.max_position),
                 np.random.uniform(-max_angles, max_angles, 3)))
             self.pose[5] = 0.0
             self.v = np.random.uniform(-max_velocity, max_velocity, 3)
@@ -82,6 +87,8 @@ class PhysicsSim():
         self.prop_wind_speed = np.array([0., 0., 0., 0.])
 
         self.done = False
+        self.info = dict(crash=False)
+
 
     def find_body_velocity(self):
         body_velocity = np.matmul(earth_to_body_frame(*list(self.pose[3:])), self.v)
@@ -156,22 +163,24 @@ class PhysicsSim():
 
         new_positions = []
         for ii in range(3):
-            if position[ii] <= self.lower_bounds[ii]:
-                new_positions.append(self.lower_bounds[ii])
+            if position[ii] <= self.min_position[ii]:
+                new_positions.append(self.min_position[ii])
+                self.info['crash'] = True
                 self.done = True
-            elif position[ii] > self.upper_bounds[ii]:
-                new_positions.append(self.upper_bounds[ii])
+            elif position[ii] > self.max_position[ii]:
+                new_positions.append(self.max_position[ii])
+                self.info['crash'] = True
                 self.done = True
             else:
                 new_positions.append(position[ii])
 
         self.pose = np.array(new_positions + list(angles))
         self.time += self.dt
-        if self.time > self.runtime:
-            self.done = True
-        return self.done
 
-
+        # Not required in AI Gym. Gym times out according to the registry.
+        # if self.time > self.runtime:
+        #     self.info['timeout'] = True
+        #     self.done = True
 
 
 class QuadCopter(gym.Env):
@@ -183,7 +192,6 @@ class QuadCopter(gym.Env):
     def __init__(self):
 
         self.sim = PhysicsSim()
-        self.sim.reset(state='ten-up')
 
         self.action_space = spaces.Box(
             low=-self.sim.max_rotor_speed, high=self.sim.max_rotor_speed,
@@ -198,13 +206,13 @@ class QuadCopter(gym.Env):
 
     def step(self, u):
         rotor_speeds = u
-        self.sim.next_timestep(rotor_speeds)
+        done = self.sim.next_timestep(rotor_speeds)
         reward = self._get_reward()
 
-        return self._get_obs(), reward, False, {}
+        return self._get_obs(), reward, self.sim.done, self.sim.info
 
     def reset(self, **kwargs):
-        self.sim.reset(state='ten-up', **kwargs)
+        self.sim.reset()
 
     def _get_reward(self):
         reward = 1.0
