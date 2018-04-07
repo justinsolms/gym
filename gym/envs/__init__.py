@@ -51,6 +51,12 @@ register(
 # ----------------------------------------
 
 register(
+    id='QuadCopter-v0',
+    entry_point='gym.envs.classic_control:QuadCopter',
+    max_episode_steps=500,
+)
+
+register(
     id='CartPole-v0',
     entry_point='gym.envs.classic_control:CartPoleEnv',
     max_episode_steps=200,
@@ -530,4 +536,3 @@ register(
     entry_point='gym.envs.unittest:MemorizeDigits',
     reward_threshold=20,
     )
-
