@@ -276,6 +276,7 @@ We are using `pytest <http://doc.pytest.org>`_ for tests. You can run them via:
 What's new
 ==========
 
+- 2018-04-07: Experimental addtion of a QuadCopter into the classic control environments. **Bug:** There is a hozontal velocity instability for negatove body velocities. **Note:** This is partly tested code which appears to deliver dynamics over 5 seconds. I hope someone with tiime will sort out the bug mentioned.
 - 2018-02-28: Release of a set of new robotics environments.
 - 2018-01-25: Made some aesthetic improvements and removed unmaintained parts of gym. This may seem like a downgrade in functionality, but it is actually a long-needed cleanup in preparation for some great new things that will be released in the next month.
 
