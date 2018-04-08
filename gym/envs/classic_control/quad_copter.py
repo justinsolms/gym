@@ -5,11 +5,16 @@ from gym import spaces
 from gym.utils import seeding
 import numpy as np
 from os import path
+from numpy.linalg import norm
+from numpy import dot, sqrt, cross
 
-max_position = 300.0  # meters
-max_angles = (22. / 7. / 180.) * 45  # 45 degrees
+
+max_position = 50.0  # meters
+max_angles = (np.pi / 180.) * 20  # 45 degrees
 max_velocity = 10.0
-max_angle_velocity = (22. / 7. / 180.) * 45  # 45 degrees/s
+max_angle_velocity = (np.pi / 180.) * 20  # 45 degrees/s
+rotor_speeds_balance = 403.93
+max_rotor_speed_dev = 10.0
 
 def C(x):
     return np.cos(x)
@@ -42,12 +47,13 @@ class PhysicsSim():
             self.reset_state = None
 
         self.n_rotors = 4
-        self.max_rotor_speed = 900.0
+        self.max_rotor_speed = 600.0
+        self.min_rotor_speed = 300.0
 
         self.gravity = -9.81  # m/s
         self.rho = 1.2
         self.mass = 0.958  # 300 g
-        self.dt = 1 / 100.0  # Timestep
+        self.dt = 1 / 50.0  # Timestep
         self.C_d = 0.3
         self.l_to_rotor = 0.4
         self.propeller_size = 0.1
@@ -59,23 +65,23 @@ class PhysicsSim():
         I_z = 1 / 12. * self.mass * (width**2 + length**2)
         self.moments_of_inertia = np.array([I_x, I_y, I_z])  # moments of inertia
 
-        self.max_position = np.array([max_position / 2, max_position / 2, max_position])
-        self.min_position = np.array([-max_position / 2, -max_position / 2, 0])
+        self.max_position = np.array([max_position, max_position, max_position])
+        self.min_position = np.array([-max_position, -max_position, 0])
 
         self.reset()
 
     def reset(self, state=None):
         self.time = 0.0
-        # if self.reset_state == 'ten-up':
-        if True:
+        # self.reset_state = 'ten-up'
+        if self.reset_state == 'ten-up':
             self.runtime = 5.0
-            self.pose = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
-            self.v = np.array([+10.0, 0.0, 0.0])
+            self.pose = np.array([0.0, 0.0, 25.0, 0.0, 0.0, 0.0])
+            self.v = np.array([0.0, 0.0, 0.0])
             self.angular_v = np.array([0.0, 0.0, 0.0])
         else:
             self.runtime = np.inf
             self.pose = np.concatenate((
-                np.random.uniform(self.min_position, self.max_position),
+                np.random.uniform(self.min_position/2, self.max_position/2),
                 np.random.uniform(-max_angles, max_angles, 3)))
             self.pose[5] = 0.0
             self.v = np.random.uniform(-max_velocity, max_velocity, 3)
@@ -87,16 +93,16 @@ class PhysicsSim():
         self.prop_wind_speed = np.array([0., 0., 0., 0.])
 
         self.done = False
-        self.info = dict(crash=False)
+        self.info = dict(time=0.0, crash=False)
 
 
     def find_body_velocity(self):
-        body_velocity = np.matmul(earth_to_body_frame(*list(self.pose[3:])), self.v)
+        body_velocity = np.matmul(earth_to_body_frame(*list(self.pose[3:6])), self.v)
         return body_velocity
 
     def get_linear_drag(self):
-        linear_drag = 0.5 * self.rho * self.find_body_velocity()**2 * self.areas * self.C_d
-        return linear_drag
+        linear_drag = 0.5 * self.rho * self.find_body_velocity() * np.abs(self.find_body_velocity()) * self.areas * self.C_d
+        return linear_drag * 1.0
 
     def get_linear_forces(self, thrusts):
         # Gravity
@@ -176,6 +182,7 @@ class PhysicsSim():
 
         self.pose = np.array(new_positions + list(angles))
         self.time += self.dt
+        self.info['time'] = self.time
 
         # Not required in AI Gym. Gym times out according to the registry.
         # if self.time > self.runtime:
@@ -194,10 +201,10 @@ class QuadCopter(gym.Env):
         self.sim = PhysicsSim()
 
         self.action_space = spaces.Box(
-            low=-self.sim.max_rotor_speed, high=self.sim.max_rotor_speed,
+            low=-self.sim.min_rotor_speed, high=self.sim.max_rotor_speed,
             shape=(self.sim.n_rotors,), dtype=float)
 
-        high = self._get_obs() * 1.e10
+        high = self._get_obs() * max_position
         self.observation_space = spaces.Box(low=-high, high=high, dtype=float)
 
     def seed(self, seed=None):
@@ -206,25 +213,74 @@ class QuadCopter(gym.Env):
 
     def step(self, u):
         rotor_speeds = u
-        done = self.sim.next_timestep(rotor_speeds)
+        self.sim.next_timestep(rotor_speeds)
         reward = self._get_reward()
+
 
         return self._get_obs(), reward, self.sim.done, self.sim.info
 
     def reset(self, **kwargs):
         self.sim.reset()
+        return self._get_obs()
 
     def _get_reward(self):
-        reward = 1.0
-        return reward
+        R = self.sim.pose[:3]  # positions
+        V = self.sim.v
+        A = self.sim.pose[3:]  # angles
+        W = self.sim.angular_v
+
+        Rt = np.array([0., 0., 25.])
+        Vt = np.array([0., 0., 0.])
+        At = np.array([0., 0., 0.])
+
+        Re = Rt - R
+        Ve = Vt - V
+        Ae = At - A
+
+        R = earth_to_body_frame(*self.sim.pose[3:])
+        RR = R * R  # Square of elements
+        R_on = np.trace(RR) / 3.0  # Mean trace R^2
+        R_off = ((RR).sum() - R_on) / 6.0  # Mean off-diagonal R^2
+
+
+        reward = (
+            + 0.0
+            - norm(Re) ** 2 / 10.0 / 10.0
+            + R_on
+            - R_off
+            # + dot(Re, V) / 100.0
+            # - norm(cross(Re, V)) ** 2 / 100000.
+            )
+
+        if self.sim.done:
+            if self.sim.info['crash']:
+                reward -= 100.0
+
+        return reward / 1.
 
     def _get_obs(self):
+        """
+        A SCM solves the angle discontinuity problem and singularities for
+        angular rates at pitch = -pi, +pi
+        TODO: Use quaternions instead of DCM
+        TODO: Use quaternion rate instead of angular rates.
+
+        Returns
+        -------
+        np.array (len=18):
+            Features (some form sates (the DCM))
+            - position (3)
+            - DCM (9)
+            - velocity (3)
+            - angular velocity (3)
+        """
         state = np.concatenate((
-            self.sim.pose[:3],  # positions
-            self.sim.pose[3:],  # angles
+            self.sim.pose[0:3],  # positions
+            earth_to_body_frame(*list(self.sim.pose[3:6])).flatten(),
             self.sim.v,
             self.sim.angular_v,
-            self.sim.linear_accel,
-            self.sim.angular_accels,
+            # self.sim.linear_accel,
+            # self.sim.angular_accels,
             ))
+        # state[3:6] = self.sim.pose[3:6]  # for testing with  Quadcopter_Project-Tests.ipynb
         return state

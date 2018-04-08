@@ -53,7 +53,7 @@ register(
 register(
     id='QuadCopter-v0',
     entry_point='gym.envs.classic_control:QuadCopter',
-    max_episode_steps=1000,
+    max_episode_steps=1500,
 )
 
 register(
