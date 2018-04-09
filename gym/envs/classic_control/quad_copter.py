@@ -10,11 +10,13 @@ from numpy import dot, sqrt, cross
 
 
 max_position = 50.0  # meters
-max_angles = (np.pi / 180.) * 20  # 45 degrees
-max_velocity = 10.0
-max_angle_velocity = (np.pi / 180.) * 20  # 45 degrees/s
-rotor_speeds_balance = 403.93
-max_rotor_speed_dev = 10.0
+max_angles = (np.pi / 180.) * 0.1  # 45 degrees
+max_velocity = 0.1
+max_angle_velocity = (np.pi / 180.) * 0.1  # 45 degrees/s
+
+rotor_speeds_extra = 0.0
+rotor_speeds_balance = 403.93 + rotor_speeds_extra
+max_rotor_speed_dev = 7.0
 
 def C(x):
     return np.cos(x)
@@ -47,8 +49,8 @@ class PhysicsSim():
             self.reset_state = None
 
         self.n_rotors = 4
-        self.max_rotor_speed = 600.0
-        self.min_rotor_speed = 300.0
+        self.max_rotor_speed = rotor_speeds_balance + max_rotor_speed_dev
+        self.min_rotor_speed = rotor_speeds_balance - max_rotor_speed_dev
 
         self.gravity = -9.81  # m/s
         self.rho = 1.2
@@ -93,7 +95,7 @@ class PhysicsSim():
         self.prop_wind_speed = np.array([0., 0., 0., 0.])
 
         self.done = False
-        self.info = dict(time=0.0, crash=False)
+        self.info = dict(time=0.0, range=0.0, crash=False)
 
 
     def find_body_velocity(self):
@@ -201,7 +203,7 @@ class QuadCopter(gym.Env):
         self.sim = PhysicsSim()
 
         self.action_space = spaces.Box(
-            low=-self.sim.min_rotor_speed, high=self.sim.max_rotor_speed,
+            low=self.sim.min_rotor_speed, high=self.sim.max_rotor_speed,
             shape=(self.sim.n_rotors,), dtype=float)
 
         high = self._get_obs() * max_position
@@ -214,10 +216,10 @@ class QuadCopter(gym.Env):
     def step(self, u):
         rotor_speeds = u
         self.sim.next_timestep(rotor_speeds)
+        state = self._get_obs()
         reward = self._get_reward()
-
-
-        return self._get_obs(), reward, self.sim.done, self.sim.info
+        # print(self.sim.pose[0:3], rotor_speeds, '%.4f' % self.sim.info['time'], self.sim.info['crash'])
+        return state, reward, self.sim.done, self.sim.info
 
     def reset(self, **kwargs):
         self.sim.reset()
@@ -229,7 +231,7 @@ class QuadCopter(gym.Env):
         A = self.sim.pose[3:]  # angles
         W = self.sim.angular_v
 
-        Rt = np.array([0., 0., 25.])
+        Rt = np.array([0., 0., max_position / 2.0])
         Vt = np.array([0., 0., 0.])
         At = np.array([0., 0., 0.])
 
@@ -237,24 +239,26 @@ class QuadCopter(gym.Env):
         Ve = Vt - V
         Ae = At - A
 
-        R = earth_to_body_frame(*self.sim.pose[3:])
-        RR = R * R  # Square of elements
-        R_on = np.trace(RR) / 3.0  # Mean trace R^2
-        R_off = ((RR).sum() - R_on) / 6.0  # Mean off-diagonal R^2
+        C = earth_to_body_frame(*self.sim.pose[3:])
+        CC = C * C  # Square of elements
+        C_on = np.trace(CC) / 3.0  # Mean trace C^2
+        C_off = ((CC).sum() - C_on) / 6.0  # Mean off-diagonal C^2
 
 
         reward = (
-            + 0.0
-            - norm(Re) ** 2 / 10.0 / 10.0
-            + R_on
-            - R_off
-            # + dot(Re, V) / 100.0
+            + 10.0 - norm(Re)
+            # - norm(Ve)
+            # + C_on / 10.0
+            # - C_off / 10.0
+            + dot(Re, V)
             # - norm(cross(Re, V)) ** 2 / 100000.
             )
 
         if self.sim.done:
             if self.sim.info['crash']:
-                reward -= 100.0
+                reward -= 0.0
+
+        self.sim.info['range'] = norm(Re)
 
         return reward / 1.
 
@@ -273,14 +277,16 @@ class QuadCopter(gym.Env):
             - DCM (9)
             - velocity (3)
             - angular velocity (3)
+            - linear acceleration (3)
+            - angular acceleration (3)
         """
         state = np.concatenate((
             self.sim.pose[0:3],  # positions
             earth_to_body_frame(*list(self.sim.pose[3:6])).flatten(),
             self.sim.v,
             self.sim.angular_v,
-            # self.sim.linear_accel,
-            # self.sim.angular_accels,
+            self.sim.linear_accel,
+            self.sim.angular_accels,
             ))
         # state[3:6] = self.sim.pose[3:6]  # for testing with  Quadcopter_Project-Tests.ipynb
         return state
